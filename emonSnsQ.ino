@@ -53,7 +53,8 @@ byte eepromSlot = 0;
 sStatus oem;
 const unsigned long DEFAULT_TIME = 1357041600;
 
-const uint8_t pipes[][6] = { "1emon", "2emon", "3emon", "4emon", "5emon", "6emon", };
+const uint8_t pipes[][6] = { "0emon", "1emon", "2emon", "3emon", "4emon", "5emon" };
+uint8_t packet_nop = OEM_NOP;
 
 //int deloop;
 //byte rx_buffer[32];
@@ -233,7 +234,7 @@ void setup()
   Serial.print( "-vphase");
   Serial.print( "-dbg");
   Serial.print( "-q32");
-  Serial.println( "A.");
+  Serial.println( "-C.");
   
   radio.begin();                           // Setup and configure rf radio
   radio.setChannel(32);
@@ -246,7 +247,7 @@ void setup()
   radio.setCRCLength(RF24_CRC_16); 
   
   radio.openWritingPipe( pipes[1]);
-  radio.openReadingPipe( 1, pipes[0]);
+  radio.openReadingPipe( 3, pipes[3]);
   
   radio.startListening();                 // Start listening
   radio.stopListening();
@@ -336,8 +337,8 @@ void setup()
   if ( eepromSlot >= 0) {
     memcpy_from_eeprom_with_checksum( (char*) &oem.energy, ee_addresses[ eepromSlot], sizeof( oem.energy));
     
-    oem.energy.timestamp += oem.energy.duration +1;
-    oem.energy.duration = 0;
+    oem.power.timestamp = oem.energy.timestamp += oem.energy.duration +1;
+    oem.energy.duration = 0; 
     
     Serial.print( "  slot[");
     Serial.print( eepromSlot);
@@ -509,15 +510,15 @@ void loop()
     HEARTBEAT_INP |= (1<< HEARTBEAT_LED);
 
     send_packet( OEM_ENERGY, (char*) &(oem.energy), sizeof( oem_energy));
-    handleRx();
     
     if ( oem.energy.duration % 5) {
       send_packet( OEM_POWER, (char*) &(oem.power), sizeof( oem_power));
-      handleRx();
     }
     
     HEARTBEAT_INP |= (1<< HEARTBEAT_LED);
   }
+
+  handleRx();
 } // end of loop()
 
 void send_packet( byte packetid, char* packet, byte psize) {
@@ -532,8 +533,15 @@ void send_packet( byte packetid, char* packet, byte psize) {
 
 uint8_t handleRx() {
   static oem_packet rx_buffer;
+  uint8_t pipe;
+  bool cmd = false;
+  bool ack = false;
   uint8_t psz = 0;
-  if ( radio.available() || radio.isAckPayloadAvailable()){       
+  
+  cmd = radio.available( &pipe);
+  ack = radio.isAckPayloadAvailable();
+  
+  if ( cmd || ack){       
     psz = radio.getDynamicPayloadSize();
     radio.read( &rx_buffer, psz);
     
@@ -542,20 +550,28 @@ uint8_t handleRx() {
         if ( rx_buffer.timestamp.timestamp > DEFAULT_TIME) {
           setTime( rx_buffer.timestamp.timestamp);
           oem.ts.timestamp = rx_buffer.timestamp.timestamp;
-/*          
-          oem.power.timestamp = rx_buffer.timestamp.timestamp;
-          oem.energy.timestamp = rx_buffer.timestamp.timestamp;
-          oem.energy.duration = 0;
-*/
-          Serial.print( "rx time[");
+          
+          long timeoff = oem.ts.timestamp - oem.power.timestamp;
+          
+          if ( timeoff > 1) {
+            if ( timeoff > 3600) saveToEEprom();
+            
+            oem.power.timestamp = rx_buffer.timestamp.timestamp;
+            oem.energy.timestamp = rx_buffer.timestamp.timestamp;
+            oem.energy.duration = 0;
+          }
+
+          Serial.print( "TIME[");
+          Serial.print( timeoff);
+          Serial.print( "] [");
           Serial.print(hour());
           printDigits(minute());
           printDigits(second());
           Serial.print(" ");
           Serial.print(day());
-          Serial.print(" ");
+          Serial.print(".");
           Serial.print(month());
-          Serial.print(" ");
+          Serial.print(".");
           Serial.print(year()); 
           Serial.println( "]");
         }
@@ -569,6 +585,8 @@ uint8_t handleRx() {
         Serial.println( "]");
     }
   }
+  
+  if ( cmd) radio.writeAckPayload( pipe, &packet_nop, 1);
     
   return psz;
 }
